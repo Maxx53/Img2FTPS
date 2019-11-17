@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Threading;
@@ -32,61 +31,18 @@ namespace CommonTools
             ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
         }
 
-        //To read files from dir: 
-        //var files = Directory.GetFiles(@"c:\MyDir\");
-        public void Upload(string folder, string[] files)
-        {
-            var data = new Dictionary<string, byte[]>();
-
-            foreach (var file in files)
-            {
-                data.Add(Path.GetFileName(file), File.ReadAllBytes(file));
-            }
-
-            Upload(folder, data);
-        }
-
-        public void Upload(string path, Dictionary<string, byte[]> data)
+        /// <summary>
+        /// Use to upload multiple files to ftp folder. Pass array with source file paths.
+        /// </summary>
+        public void Upload(string path, string[] files)
         {
             try
             {
                 if (CheckAndCreateForder(path))
                 {
-                    foreach (var item in data)
+                    foreach (var file in files)
                     {
-                        var fname = item.Key;
-                        var content = item.Value;
-
-                        if (IsValidImageFile(content))
-                        {
-                            var fullPath = $"{ftpPath}/{path}/{fname}";
-                            var uploadReq = CreateFtpReq(fullPath, WebRequestMethods.Ftp.UploadFile);
-
-                            Task.Run(() =>
-                            {
-                                slimSem.Wait();
-
-                                Console.WriteLine($"Start uploading [{fname}]");
-                                uploadReq.ContentLength = content.Length;
-
-                                using (Stream requestStream = uploadReq.GetRequestStream())
-                                {
-                                    requestStream.Write(content, 0, content.Length);
-                                }
-
-                            }).ContinueWith(x =>
-                            {
-                                using (FtpWebResponse response = (FtpWebResponse)uploadReq.GetResponse())
-                                {
-                                    if (response.StatusCode == FtpStatusCode.ClosingData)
-                                        Console.WriteLine($"[{fname}] uploaded!");
-                                }
-
-                                slimSem.Release();
-                            });
-                        }
-                        else
-                            Console.WriteLine($"[{fname}] not valid, skipping...");
+                        UploadOne(path, Path.GetFileName(file), File.ReadAllBytes(file));
                     }
                 }
             }
@@ -96,6 +52,61 @@ namespace CommonTools
             }
         }
 
+        /// <summary>
+        /// Use to upload one file to ftp folder. Pass one file path.
+        /// </summary>
+        public void Upload(string path, string fpath)
+        {
+            Upload(path, Path.GetFileName(fpath), File.ReadAllBytes(fpath));
+        }
+
+        /// <summary>
+        /// Use to upload one file to ftp folder. Pass one file name and byte array content
+        /// </summary>
+        public void Upload(string path, string fname, byte[] content)
+        {
+            try
+            {
+                if (CheckAndCreateForder(path))
+                    UploadOne(path, fname, content);
+            }
+            catch
+            {
+                //Catch to log
+            }
+        }
+
+        private void UploadOne(string path, string fname, byte[] content)
+        {
+            if (IsValidImageFile(content))
+            {
+                var fullPath = $"{ftpPath}/{path}/{fname}";
+                var uploadReq = CreateFtpReq(fullPath, WebRequestMethods.Ftp.UploadFile);
+
+                Task.Run(() =>
+                {
+                    slimSem.Wait();
+
+                    Console.WriteLine($"Start uploading [{fname}]");
+                    uploadReq.ContentLength = content.Length;
+
+                    using Stream requestStream = uploadReq.GetRequestStream();
+                    requestStream.Write(content, 0, content.Length);
+
+                }).ContinueWith(x =>
+                {
+                    using (FtpWebResponse response = (FtpWebResponse)uploadReq.GetResponse())
+                    {
+                        if (response.StatusCode == FtpStatusCode.ClosingData)
+                            Console.WriteLine($"[{fname}] uploaded!");
+                    }
+
+                    slimSem.Release();
+                });
+            }
+            else
+                Console.WriteLine($"[{fname}] not valid, skipping...");
+        }
 
         private FtpWebRequest CreateFtpReq(string path, string method)
         {
@@ -120,21 +131,19 @@ namespace CommonTools
 
                 using (FtpWebResponse response = (FtpWebResponse)checkReq.GetResponse())
                 {
-                    using (StreamReader stream = new StreamReader(response.GetResponseStream()))
+                    using StreamReader stream = new StreamReader(response.GetResponseStream());
+                    while (!stream.EndOfStream)
                     {
-                        while (!stream.EndOfStream)
+                        //If path exist in directory
+                        if (stream.ReadLine() == path)
                         {
-                            //If path exist in directory
-                            if (stream.ReadLine() == path)
-                            {
-                                Console.WriteLine($"Path [{path}] found!");
-                                return true;
-                            }
+                            Console.WriteLine($"Path [{path}] found!");
+                            return true;
                         }
                     }
                 }
 
-                //Folder no found > create new
+                //Folder not found > create new
                 var createReq = CreateFtpReq($"{ftpPath}/{path}", WebRequestMethods.Ftp.MakeDirectory);
 
                 using (FtpWebResponse response = (FtpWebResponse)createReq.GetResponse())
